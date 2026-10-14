@@ -70,7 +70,7 @@ $$('.tab-btn').forEach(btn => {
 
 $('#theme-btn').onclick = () => {
   const cur = document.documentElement.getAttribute('data-theme');
-  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', cur === 'light' ? 'light' : 'dark');
 };
 
 // --- FUNCIONES DE CARGA SVG ---
