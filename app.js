@@ -18,6 +18,7 @@ const PALETTES = {
 
 function toast(m) {
   const t = $('#toast');
+  if (!t) return;
   t.textContent = m;
   t.style.display = 'block';
   clearTimeout(toast.t);
@@ -518,7 +519,7 @@ async function read(f) {
 }
 
 $('#up').onclick = () => $('#file').click();
-$('#empty-drop').onclick = () => $('#file').click();
+if ($('#empty-drop')) $('#empty-drop').onclick = () => $('#file').click();
 $('#file').onchange = e => {
   if (e.target.files[0]) read(e.target.files[0]);
   e.target.value = '';
@@ -920,6 +921,7 @@ $('#dl-csv').onclick = () => {
   };
   Object.entries(cfg).forEach(([id, c]) => {
     const el = document.getElementById(id);
+    if (!el) return;
     const cur = () => parseFloat(getComputedStyle(app).getPropertyValue(c.v)) || c.def;
     const set = w => {
       w = Math.max(c.min, Math.min(c.max, w));
@@ -942,27 +944,22 @@ $('#dl-csv').onclick = () => {
       layout();
     };
   });
+})();
 
 // --- CARGA AUTOMÁTICA DEL MAPA PREDETERMINADO ---
 async function cargarMapaPorDefecto() {
   try {
-    const res = await fetch('chile-comunas.svg');
-    if (!res.ok) throw new Error('No se encontró chile-comunas.svg');
+    const res = await fetch('./chile-comunas.svg');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const svgText = await res.text();
     load(svgText);
   } catch (err) {
-    console.warn('No se pudo precargar el mapa:', err);
-    toast('Para ver el mapa inicial, abre el proyecto con Live Server o GitHub Pages.');
+    console.warn('No se pudo precargar ./chile-comunas.svg:', err);
   }
 }
 
-// Si agregaste el botón #btn-chile en el header, lo conectamos:
 if ($('#btn-chile')) {
   $('#btn-chile').onclick = cargarMapaPorDefecto;
 }
 
-// Ejecutar automáticamente al entrar a la página:
 cargarMapaPorDefecto();
-
-
-})();
