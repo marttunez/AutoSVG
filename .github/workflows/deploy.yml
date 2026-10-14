@@ -1,0 +1,43 @@
+name: Deploy con Cache Busting a GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Agregar hash del commit a CSS y JS (Cache Busting)
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          sed -i "s/style\.css[^\"]*/style.css?v=$SHORT_SHA/g" index.html
+          sed -i "s/app\.js[^\"]*/app.js?v=$SHORT_SHA/g" index.html
+
+      - name: Configurar Pages
+        uses: actions/configure-pages@v5
+
+      - name: Subir artefacto
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Desplegar a GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
