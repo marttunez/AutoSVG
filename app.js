@@ -180,7 +180,11 @@ function analyze() {
   L.add(new Option('Detección automática', 'auto'));
   for (let i = 0; i <= maxDepth; i++) L.add(new Option(`Nivel ${i + 1} · ${count(i)} unidades`, i));
   L.add(new Option(`Cada forma · ${SH.length}`, 'shape'));
-  group('auto');
+
+  // Seleccionar Nivel 3 (índice 2) por defecto si el SVG tiene esa profundidad:
+  const defaultLevel = maxDepth >= 2 ? '2' : 'auto';
+  L.value = defaultLevel;
+  group(defaultLevel);
 }
 
 const hostAt = (x, d) => x.chain.length ? x.chain[Math.min(d, x.chain.length - 1)] : null;
