@@ -7,7 +7,8 @@ const AUTO = /^(path|g|rect|svg|circle|ellipse|polygon|polyline|line|use|defs|la
 let svg = null, SH = [], maxDepth = 0, units = [], colors = new Map(), assign = new Map();
 let legends = [], activeL = 0, nextL = 1, z = 1;
 let toolMode = 'paint', spaceDown = false, isPainting = false, paintAction = null;
-let history = [], histIdx = -1;
+let hist = [], histIdx = -1; // (antes "history": tapaba a window.history)
+let lastLevel = 'auto';
 
 // Estado de encuadre de exportación (Crop Box) y posición de la leyenda dentro del mapa
 let origVB = { x: 0, y: 0, w: 800, h: 600 };
@@ -28,6 +29,13 @@ function toast(m) {
   t.style.display = 'block';
   clearTimeout(toast.t);
   toast.t = setTimeout(() => t.style.display = 'none', 3200);
+}
+
+// Agrupa renders consecutivos en un solo frame (pintar arrastrando)
+let rafId = 0;
+function renderSoon() {
+  if (rafId) return;
+  rafId = requestAnimationFrame(() => { rafId = 0; render(); });
 }
 
 // Conversión de coordenadas de pantalla (puntero) a coordenadas internas del SVG
@@ -51,13 +59,13 @@ function pushHistory() {
     cropBox: { ...cropBox },
     legPos: { ...legPos }
   });
-  if (histIdx >= 0 && history[histIdx] === snap) return;
-  history = history.slice(0, histIdx + 1);
-  history.push(snap);
-  if (history.length > 50) history.shift();
-  histIdx = history.length - 1;
+  if (histIdx >= 0 && hist[histIdx] === snap) return;
+  hist = hist.slice(0, histIdx + 1);
+  hist.push(snap);
+  if (hist.length > 50) hist.shift();
+  histIdx = hist.length - 1;
   $('#undo').disabled = histIdx <= 0;
-  $('#redo').disabled = histIdx >= history.length - 1;
+  $('#redo').disabled = histIdx >= hist.length - 1;
 }
 
 function restoreSnap(snapStr) {
@@ -73,11 +81,11 @@ function restoreSnap(snapStr) {
   renderLegs();
   render();
   $('#undo').disabled = histIdx <= 0;
-  $('#redo').disabled = histIdx >= history.length - 1;
+  $('#redo').disabled = histIdx >= hist.length - 1;
 }
 
-$('#undo').onclick = () => { if (histIdx > 0) restoreSnap(history[--histIdx]); };
-$('#redo').onclick = () => { if (histIdx < history.length - 1) restoreSnap(history[++histIdx]); };
+$('#undo').onclick = () => { if (histIdx > 0) restoreSnap(hist[--histIdx]); };
+$('#redo').onclick = () => { if (histIdx < hist.length - 1) restoreSnap(hist[++histIdx]); };
 
 // --- PESTAÑAS Y TEMA ---
 $$('.tab-btn').forEach(btn => {
@@ -108,7 +116,8 @@ function label(e) {
 }
 
 function sanitize(root) {
-  root.querySelectorAll('script,foreignObject,iframe,object,embed').forEach(e => e.remove());
+  // animate/set pueden reescribir atributos (p. ej. href) después de la limpieza
+  root.querySelectorAll('script,foreignObject,iframe,object,embed,animate,set,animateTransform,animateMotion').forEach(e => e.remove());
   root.querySelectorAll('image').forEach(e => {
     const h = e.getAttribute('href') || e.getAttribute('xlink:href') || '';
     if (!/^data:image\//i.test(h)) e.remove();
@@ -174,7 +183,7 @@ function load(text) {
   updateCanvasViewBox();
   ['png', 'svgx', 'copy', 'dl-csv', 'level'].forEach(i => $('#' + i).disabled = false);
   $('#lvlrow').hidden = false;
-  history = [];
+  hist = [];
   histIdx = -1;
   pushHistory();
 }
@@ -193,6 +202,7 @@ function updateCanvasViewBox() {
   const maxY = Math.max(origVB.y + origVB.h, cropBox.y + cropBox.h, legPos.y + baseFontSize() * 6) + pad;
   svg.setAttribute('viewBox', `${minX} ${minY} ${maxX - minX} ${maxY - minY}`);
   layout();
+  renderCropOverlay(); // redibuja con el tamaño de tiradores acorde al nuevo viewBox
 }
 
 function updateStrokeVars() {
@@ -232,6 +242,7 @@ function analyze() {
   // Nivel 3 (índice 2) por defecto si existe esa jerarquía
   const defaultLevel = maxDepth >= 2 ? '2' : 'auto';
   L.value = defaultLevel;
+  lastLevel = defaultLevel;
   group(defaultLevel);
 }
 
@@ -385,6 +396,19 @@ function updateStats() {
   $('#st-sum').textContent = fmt(sum);
 }
 
+// Centro de un elemento expresado en coordenadas de usuario de la raíz <svg>
+// (tiene en cuenta cualquier transform de los grupos ancestros)
+function centerInRoot(el) {
+  const bbox = el.getBBox();
+  if (!bbox.width || !bbox.height) return null;
+  const pt = svg.createSVGPoint();
+  pt.x = bbox.x + bbox.width / 2;
+  pt.y = bbox.y + bbox.height / 2;
+  const eCTM = el.getScreenCTM(), rCTM = svg.getScreenCTM();
+  if (!eCTM || !rCTM) return pt;
+  return pt.matrixTransform(rCTM.inverse().multiply(eCTM));
+}
+
 function renderMapLabels() {
   if (!svg) return;
   const old = svg.querySelector('#g-map-labels');
@@ -411,11 +435,11 @@ function renderMapLabels() {
 
     if (!txt) return;
     try {
-      const bbox = u.host.getBBox();
-      if (!bbox.width || !bbox.height) return;
+      const c = centerInRoot(u.host);
+      if (!c) return;
       const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      t.setAttribute('x', bbox.x + bbox.width / 2);
-      t.setAttribute('y', bbox.y + bbox.height / 2 + fs * 0.35);
+      t.setAttribute('x', c.x);
+      t.setAttribute('y', c.y + fs * 0.35);
       t.setAttribute('text-anchor', 'middle');
       t.setAttribute('font-size', fs);
       t.setAttribute('class', 'map-lbl');
@@ -714,13 +738,15 @@ stage.addEventListener('pointerdown', e => {
     if (paintAction === 'erase') assign.delete(uIdx);
     else assign.set(uIdx, { lid: activeL, v: a ? a.v : null });
   }
-  render();
+  renderSoon();
 });
 
 window.addEventListener('pointerup', () => {
   if (isPainting) {
     isPainting = false;
     paintAction = null;
+    // Asegura que el último render pendiente ya se aplicó antes de guardar el snapshot
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; render(); }
     pushHistory();
   }
 });
@@ -735,7 +761,7 @@ stage.addEventListener('mouseover', e => {
     const a = assign.get(uIdx);
     if (paintAction === 'erase') assign.delete(uIdx);
     else assign.set(uIdx, { lid: activeL, v: a ? a.v : null });
-    render();
+    renderSoon();
   }
 
   tip.textContent = uname(uIdx);
@@ -812,7 +838,20 @@ $('#file').onchange = e => {
   if (e.target.files[0]) read(e.target.files[0]);
   e.target.value = '';
 };
-$('#level').onchange = e => { group(e.target.value); pushHistory(); };
+
+// Cambiar de nivel reasigna los índices de las unidades: se reinicia el historial
+// (si no, deshacer aplicaría selecciones a regiones equivocadas)
+$('#level').onchange = e => {
+  if (assign.size && !confirm('Cambiar el nivel borrará las selecciones actuales. ¿Continuar?')) {
+    e.target.value = lastLevel;
+    return;
+  }
+  lastLevel = e.target.value;
+  group(e.target.value);
+  hist = [];
+  histIdx = -1;
+  pushHistory();
+};
 
 // --- LEYENDAS Y COLOR ---
 const hex2 = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
@@ -849,7 +888,32 @@ function addLeg(name, color) {
 }
 
 function renderLegs() {
-  const box = $('#legs'); box.innerHTML = ''; legends.forEach(L => { const r = document.createElement('div'); r.className = 'lg' + (L.id === activeL ? ' active' : ''); const rd = document.createElement('input'); rd.type = 'radio'; rd.name = 'al'; rd.checked = L.id === activeL; rd.title = 'Leyenda activa'; rd.onchange = () => { activeL = L.id; renderLegs(); };      const c = document.createElement('input'); c.type = 'color'; c.value = L.color; c.oninput = () => { L.color = c.value; render(); }; c.onchange = () => pushHistory();      const n = document.createElement('input'); n.type = 'text'; n.value = L.name; n.setAttribute('aria-label', 'Nombre de la leyenda'); n.onfocus = () => { activeL = L.id; $$('.lg').forEach((el, idx) => el.classList.toggle('active', legends[idx]?.id === activeL));
+  const box = $('#legs');
+  box.innerHTML = '';
+  legends.forEach(L => {
+    const r = document.createElement('div');
+    r.className = 'lg' + (L.id === activeL ? ' active' : '');
+
+    const rd = document.createElement('input');
+    rd.type = 'radio';
+    rd.name = 'al';
+    rd.checked = L.id === activeL;
+    rd.title = 'Leyenda activa';
+    rd.onchange = () => { activeL = L.id; renderLegs(); };
+
+    const c = document.createElement('input');
+    c.type = 'color';
+    c.value = L.color;
+    c.oninput = () => { L.color = c.value; render(); };
+    c.onchange = () => pushHistory();
+
+    const n = document.createElement('input');
+    n.type = 'text';
+    n.value = L.name;
+    n.setAttribute('aria-label', 'Nombre de la leyenda');
+    n.onfocus = () => {
+      activeL = L.id;
+      $$('.lg').forEach((el, idx) => el.classList.toggle('active', legends[idx]?.id === activeL));
       rd.checked = true;
     };
     n.oninput = () => { L.name = n.value; render(); };
@@ -949,50 +1013,118 @@ $('#reset-leg').onclick = () => {
 };
 
 // --- IMPORTAR CSV ---
-const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const norm = s => (s || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/^(comuna|region|provincia)\s+(de\s+|del\s+)?/i, '')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
 
 $('#imp').onclick = () => {
-  if (!units.length) return toast('Primero sube un archivo SVG.');
-  const idx = new Map(units.map((u, i) => [norm(u.name), i]).filter(x => x[0]));
-  const find = n => {
-    n = norm(n);
-    if (idx.has(n)) return idx.get(n);
-    let best = -1, bs = 0;
-    const t = new Set(n.split(' '));
-    for (const [k, i] of idx) {
-      const ks = k.split(' ');
-      const sc = ks.filter(x => t.has(x)).length / new Set([...t, ...ks]).size;
-      if (sc > bs) { bs = sc; best = i; }
+  if (!units.length) return toast('Primero sube o espera a que cargue el archivo SVG.');
+
+  // Agrupar todos los índices que compartan nombre normalizado (por si una comuna tiene varios polígonos/islas)
+  const idxMap = new Map();
+  units.forEach((u, i) => {
+    const k = norm(u.name);
+    if (!k) return;
+    if (!idxMap.has(k)) idxMap.set(k, []);
+    idxMap.get(k).push(i);
+  });
+
+  // Búsqueda inteligente: exacta -> por inclusión de palabras -> por similitud
+  const findMatches = rawName => {
+    const n = norm(rawName);
+    if (!n) return [];
+    if (idxMap.has(n)) return idxMap.get(n);
+
+    const t = n.split(' ').filter(Boolean);
+    let bestKey = null, bestScore = 0;
+
+    for (const [k] of idxMap) {
+      const ks = k.split(' ').filter(Boolean);
+      const common = ks.filter(x => t.includes(x)).length;
+      if (!common) continue;
+      // Puntuación combinada (Jaccard + cobertura de la búsqueda)
+      const score = (common / new Set([...t, ...ks]).size) * 0.6 + (common / t.length) * 0.4;
+      if (score > bestScore) {
+        bestScore = score;
+        bestKey = k;
+      }
     }
-    return bs >= 0.5 ? best : -1;
+    return bestScore >= 0.45 && bestKey ? idxMap.get(bestKey) : [];
   };
+
   let ok = 0, anyV = false;
   const miss = [];
+
   $('#data').value.split(/\r?\n/).forEach(line => {
-    const c = line.split(/[;\t]/.test(line) ? /[;\t]/ : ',').map(x => x.trim());
+    line = line.trim();
+    if (!line) return;
+
+    // Detectar separador: priorizar punto y coma (;) o tabulador (\t), si no usar coma (,)
+    const sep = line.includes(';') ? ';' : line.includes('\t') ? '\t' : ',';
+    const c = line.split(sep).map(x => x.trim()).filter(x => x !== '');
     if (c.length < 2 || !c[0]) return;
-    const i = find(c[0]);
-    if (i < 0) {
-      if (!/^(regi|nombre)/i.test(c[0])) miss.push(c[0]);
+
+    const matchedIndices = findMatches(c[0]);
+    if (!matchedIndices.length) {
+      if (!/^(regi|comuna|nombre|unidad|id)/i.test(c[0])) miss.push(c[0]);
       return;
     }
-    const pNum = x => parseFloat((x || '').replace(',', '.'));
+
+    const pNum = x => {
+      if (x == null || x === '') return NaN;
+      const clean = String(x).replace(/%/g, '').replace(',', '.').trim();
+      return /^-?\d+(\.\d+)?$/.test(clean) ? parseFloat(clean) : NaN;
+    };
+
     const getL = n => legends.find(l => norm(l.name) === norm(n)) || addLeg(n);
+
     let lid, v;
-    if (c.length >= 3) { lid = getL(c[1]).id; v = pNum(c[2]); }
-    else {
+    if (c.length >= 3) {
+      // Si el usuario usó coma como separador y escribió un decimal con coma (ej: "Santiago, 12, 5")
+      if (sep === ',' && !isNaN(pNum(c[1])) && !isNaN(pNum(c[2])) && c.length === 3) {
+        v = parseFloat(`${c[1]}.${c[2]}`);
+        lid = (v >= 0 ? legends[0] : legends[1] || legends[0]).id;
+      } else {
+        lid = getL(c[1]).id;
+        v = pNum(c[2]);
+      }
+    } else {
       v = pNum(c[1]);
-      if (isNaN(v)) lid = getL(c[1]).id;
-      else lid = (v >= 0 ? legends[0] : legends[1] || legends[0]).id;
+      if (isNaN(v)) {
+        lid = getL(c[1]).id;
+      } else {
+        lid = (v >= 0 ? legends[0] : legends[1] || legends[0]).id;
+      }
     }
-    if (!isNaN(v)) { anyV = true; v = Math.abs(v); } else v = null;
-    assign.set(i, { lid, v });
+
+    if (!isNaN(v)) {
+      anyV = true;
+      v = Math.abs(v);
+    } else {
+      v = null;
+    }
+
+    matchedIndices.forEach(idx => {
+      assign.set(idx, { lid, v });
+    });
     ok++;
   });
   renderLegs();
-  if (anyV) setVM(true); else render();
+  if (anyV) {
+    setVM(true);
+    $('#autorange').click(); // ajusta mín/máx a los valores importados
+  }
+  renderList(); // Actualiza tanto la lista lateral como los colores del mapa (render)
   pushHistory();
-  toast(`${ok} regiones aplicadas` + (miss.length ? `; no encontradas: ${miss.slice(0, 5).join(', ')}${miss.length > 5 ? '…' : ''}` : ''));
+
+  toast(
+    `${ok} filas aplicadas` +
+    (miss.length ? ` · No encontradas (${miss.length}): ${miss.slice(0, 4).join(', ')}${miss.length > 4 ? '…' : ''}` : '')
+  );
 };
 
 addLeg('Opción A', '#2e86de');
@@ -1071,16 +1203,17 @@ function exportClone() {
   const emptyCol = $('#empty-col').value;
   const strokeCol = $('#stroke-col').value;
 
-  // Remover la superposición de líneas punteadas y tiradores del archivo final
+  // 1. Remover el marco punteado y los tiradores del archivo exportado
   const cropOv = c.querySelector('#g-crop-overlay');
   if (cropOv) cropOv.remove();
 
-  // Si no hay fondo blanco activado en la leyenda, quitar el rectángulo auxiliar de hover
+  // 2. Si no hay fondo blanco en la leyenda, quitar el rectángulo invisible de hover
   if (!$('#leg-bg').checked) {
     const legOutline = c.querySelector('.leg-hover-outline');
     if (legOutline) legOutline.remove();
   }
 
+  // 3. Aplicar estilos en línea (inline) a las regiones para que no dependan de style.css
   c.querySelectorAll('.f').forEach(e => {
     const col = colors.get(+e.dataset.u), st = e.style;
     if (col) st.setProperty('fill', col, 'important');
@@ -1098,15 +1231,30 @@ function exportClone() {
       e.style.setProperty('stroke-width', sw, 'important');
     });
   }
+
+  // 4. Aplicar estilos en línea a las etiquetas (.map-lbl) para que funcionen dentro del PNG
+  c.querySelectorAll('.map-lbl').forEach(t => {
+    t.setAttribute('font-family', 'system-ui, Arial, sans-serif');
+    t.setAttribute('font-weight', '600');
+    t.setAttribute('fill', '#111111');
+    t.style.paintOrder = 'stroke';
+    t.style.stroke = 'rgba(255, 255, 255, 0.85)';
+    t.style.strokeWidth = '2px';
+  });
+
   c.querySelectorAll('[style]').forEach(e => e.style.removeProperty('--c'));
   c.querySelectorAll('[class]').forEach(e => {
-    e.classList.remove('f', 'nf', 'sk', 'c', 'hov', 'leg-hover-outline');
+    e.classList.remove('f', 'nf', 'sk', 'c', 'hov', 'leg-hover-outline', 'map-lbl');
     if (!e.getAttribute('class')) e.removeAttribute('class');
   });
   c.querySelectorAll('[data-u]').forEach(e => e.removeAttribute('data-u'));
-  if (!c.getAttribute('xmlns')) c.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
 
-  const { x: vx, y: vy, w: vw, h: vh } = cropBox;
+  // 5. Asegurar namespaces estándar requeridos por Image() y Canvas
+  c.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  c.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+
+  const vx = cropBox.x, vy = cropBox.y;
+  const vw = Math.max(1, cropBox.w), vh = Math.max(1, cropBox.h);
 
   if (!$('#bg-trans').checked) {
     const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -1126,36 +1274,72 @@ function save(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
+  document.body.appendChild(a);
   a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2500);
 }
 
 $('#svgx').onclick = () => {
   const c = exportClone();
   c.removeAttribute('style');
-  save(new Blob([new XMLSerializer().serializeToString(c)], { type: 'image/svg+xml' }), 'mapa-seleccion.svg');
+  const xml = new XMLSerializer().serializeToString(c);
+  save(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }), 'mapa-seleccion.svg');
 };
 
 $('#png').onclick = async () => {
+  const btn = $('#png');
+  const origText = btn.textContent;
   try {
-    const c = exportClone(), vb = c.viewBox.baseVal;
-    let W = Math.min(8000, +$('#pxw').value || 2000), H = Math.round(W * vb.height / vb.width);
-    if (H > 16000) { W = Math.round(W * 16000 / H); H = 16000; }
+    btn.disabled = true;
+    btn.textContent = 'Generando…';
+
+    const c = exportClone();
+    const vw = Math.max(1, cropBox.w);
+    const vh = Math.max(1, cropBox.h);
+
+    let W = Math.min(8000, Math.max(100, +$('#pxw').value || 2000));
+    let H = Math.round(W * (vh / vw));
+
+    // Limitar dimensiones máximas para no exceder la memoria del Canvas en mapas muy largos
+    const MAX_DIM = 8192;
+    if (H > MAX_DIM) {
+      W = Math.max(1, Math.round(W * (MAX_DIM / H)));
+      H = MAX_DIM;
+    }
+
     c.setAttribute('width', W);
     c.setAttribute('height', H);
     c.removeAttribute('style');
-    const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(c)], { type: 'image/svg+xml' }));
+
+    const svgStr = new XMLSerializer().serializeToString(c);
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
     const img = new Image();
-    img.src = url;
-    await img.decode();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('Fallo al rasterizar el SVG en memoria'));
+      img.src = url;
+    });
+
     const cv = document.createElement('canvas');
     cv.width = W;
     cv.height = H;
-    cv.getContext('2d').drawImage(img, 0, 0, W, H);
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(img, 0, 0, W, H);
     URL.revokeObjectURL(url);
-    cv.toBlob(b => b ? save(b, 'mapa-seleccion.png') : toast('No se pudo generar el PNG.'), 'image/png');
-  } catch {
-    toast('No se pudo exportar el PNG.');
+
+    cv.toBlob(b => {
+      if (b) save(b, 'mapa-seleccion.png');
+      else toast('No se pudo generar el archivo PNG.');
+    }, 'image/png');
+  } catch (err) {
+    console.error('Error exportando PNG:', err);
+    toast('No se pudo exportar el PNG: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
   }
 };
 
@@ -1224,6 +1408,8 @@ async function cargarMapaPorDefecto() {
     load(svgText);
   } catch (err) {
     console.warn('No se pudo precargar ./chile-comunas.svg:', err);
+    // Con file:// el navegador bloquea fetch: avisar al usuario
+    toast('No se pudo cargar el mapa por defecto. Usa un servidor local (p. ej. python -m http.server) o abre un SVG manualmente.');
   }
 }
 
