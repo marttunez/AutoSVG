@@ -730,29 +730,6 @@ $('#q').oninput = renderList;
 $('#unnamed').onchange = renderList;
 $('#sort-list').onchange = renderList;
 
-
-// --- CARGA AUTOMÁTICA DEL MAPA PREDETERMINADO ---
-async function cargarMapaPorDefecto() {
-  try {
-    const res = await fetch('chile-comunas.svg');
-    if (!res.ok) throw new Error('No se encontró chile-comunas.svg');
-    const svgText = await res.text();
-    load(svgText);
-  } catch (err) {
-    console.warn('No se pudo precargar el mapa:', err);
-    toast('Para ver el mapa inicial, abre el proyecto con Live Server o GitHub Pages.');
-  }
-}
-
-// Si agregaste el botón #btn-chile en el header, lo conectamos:
-if ($('#btn-chile')) {
-  $('#btn-chile').onclick = cargarMapaPorDefecto;
-}
-
-// Ejecutar automáticamente al entrar a la página:
-cargarMapaPorDefecto();
-
-
 // --- ZOOM (15% A 4000%) ---
 function zoomAt(k, cx, cy) {
   if (!svg) return;
@@ -965,4 +942,27 @@ $('#dl-csv').onclick = () => {
       layout();
     };
   });
+
+// --- CARGA AUTOMÁTICA DEL MAPA PREDETERMINADO ---
+async function cargarMapaPorDefecto() {
+  try {
+    const res = await fetch('chile-comunas.svg');
+    if (!res.ok) throw new Error('No se encontró chile-comunas.svg');
+    const svgText = await res.text();
+    load(svgText);
+  } catch (err) {
+    console.warn('No se pudo precargar el mapa:', err);
+    toast('Para ver el mapa inicial, abre el proyecto con Live Server o GitHub Pages.');
+  }
+}
+
+// Si agregaste el botón #btn-chile en el header, lo conectamos:
+if ($('#btn-chile')) {
+  $('#btn-chile').onclick = cargarMapaPorDefecto;
+}
+
+// Ejecutar automáticamente al entrar a la página:
+cargarMapaPorDefecto();
+
+
 })();
