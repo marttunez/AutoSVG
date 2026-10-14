@@ -602,3 +602,43 @@ footer {
   display: none;
   z-index: 100;
 }
+
+/* Caja de avisos y contacto en columna izquierda */
+.info-box {
+  margin-top: auto;
+  padding: 10px 12px;
+  background: var(--elev);
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--mut);
+  flex-shrink: 0;
+}
+
+.info-title {
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+
+.info-text {
+  margin: 0 0 6px 0;
+}
+
+.info-links {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.info-links a {
+  color: var(--acc);
+  text-decoration: none;
+}
+
+.info-links a:hover {
+  text-decoration: underline;
+}
