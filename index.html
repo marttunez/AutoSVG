@@ -13,7 +13,6 @@
     <h1>Selector SVG</h1>
     <input type="file" id="file" accept=".svg,image/svg+xml" hidden>
     <button class="pri" id="up">Abrir SVG…</button>
-    <button id="btn-chile" title="Mapa de Chile">Mapa de Chile (Comunas)</button>
 
     <div class="sep"></div>
 
@@ -53,7 +52,7 @@
         <button class="tab-btn" data-pane="p-data">Datos CSV</button>
       </div>
 
-      <!-- PANE 1: LEYENDAS -->
+      <!-- PANE 1: LEYENDAS Y ENCUADRE -->
       <div class="pane" id="p-legs">
         <div class="sec">
           <div class="sec-title">
@@ -100,15 +99,27 @@
         </div>
 
         <div class="sec">
-          <div class="sec-title"><span>Vista previa de leyenda</span></div>
-          <div id="lprev"></div>
+          <div class="sec-title"><span>Leyenda y Borde de Exportación</span></div>
+          <div class="sub">Arrastra la leyenda o los cuadros del borde punteado negro directamente sobre el mapa.</div>
+          <label class="row-between sub" style="cursor:pointer">
+            <span>Mostrar leyenda en el mapa</span>
+            <input type="checkbox" id="show-leg" checked>
+          </label>
+          <label class="row-between sub" style="cursor:pointer">
+            <span>Fondo blanco en leyenda</span>
+            <input type="checkbox" id="leg-bg" checked>
+          </label>
           <div class="row-between">
-            <span class="sub">Al exportar:</span>
-            <select id="legpos" style="width:140px">
-              <option value="right">A la derecha</option>
-              <option value="bottom">Abajo</option>
-              <option value="none">No incluir</option>
-            </select>
+            <span class="sub">Tamaño leyenda (<span id="leg-sz-lbl">1x</span>):</span>
+            <input type="range" id="leg-scale" min="0.4" max="2.5" step="0.1" value="1" style="width:120px">
+          </div>
+          <label class="row-between sub" style="cursor:pointer">
+            <span>Ver borde punteado de exportación</span>
+            <input type="checkbox" id="show-crop" checked>
+          </label>
+          <div class="row" style="margin-top:2px">
+            <button id="reset-crop" class="grow" title="Ajustar el borde de exportación alrededor de todo el contenido">Reestablecer borde</button>
+            <button id="reset-leg" class="grow" title="Devolver la leyenda a su posición inicial">Posición leyenda</button>
           </div>
         </div>
       </div>
@@ -236,7 +247,7 @@
       Media: <b id="st-avg">—</b> · Mín: <b id="st-min">—</b> · Máx: <b id="st-max">—</b> · Suma: <b id="st-sum">—</b>
     </span>
     <div class="spacer"></div>
-    <span>Rueda: zoom (15%–4000%) · Clic/arrastrar: pintar · Alt+Clic: borrar · Clic der./Espacio: mover</span>
+    <span>Arrastra la leyenda o las líneas discontinuas en el mapa para ajustar la imagen exportada</span>
   </footer>
 
   <div id="tip"></div>

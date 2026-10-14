@@ -9,6 +9,11 @@ let legends = [], activeL = 0, nextL = 1, z = 1;
 let toolMode = 'paint', spaceDown = false, isPainting = false, paintAction = null;
 let history = [], histIdx = -1;
 
+// Estado de encuadre de exportación (Crop Box) y posición de la leyenda dentro del mapa
+let origVB = { x: 0, y: 0, w: 800, h: 600 };
+let cropBox = { x: 0, y: 0, w: 800, h: 600 };
+let legPos = { x: 20, y: 20 };
+
 const PALETTES = {
   default: ['#2e86de', '#e4572e', '#27ae60', '#f2b134', '#8e44ad', '#e84393', '#16a085', '#7f8c8d'],
   okabe: ['#0072B2', '#D55E00', '#009E73', '#E69F00', '#CC79A7', '#56B4E9', '#F0E442', '#333333'],
@@ -25,6 +30,16 @@ function toast(m) {
   toast.t = setTimeout(() => t.style.display = 'none', 3200);
 }
 
+// Conversión de coordenadas de pantalla (puntero) a coordenadas internas del SVG
+function clientToSVG(clientX, clientY) {
+  if (!svg) return { x: 0, y: 0 };
+  const pt = svg.createSVGPoint();
+  pt.x = clientX;
+  pt.y = clientY;
+  const ctm = svg.getScreenCTM();
+  return ctm ? pt.matrixTransform(ctm.inverse()) : { x: 0, y: 0 };
+}
+
 // --- HISTORIAL (UNDO / REDO) ---
 function pushHistory() {
   if (!svg) return;
@@ -32,7 +47,9 @@ function pushHistory() {
     assign: [...assign.entries()],
     legends: legends.map(l => ({ ...l })),
     activeL,
-    vmode: $('#vmode').checked
+    vmode: $('#vmode').checked,
+    cropBox: { ...cropBox },
+    legPos: { ...legPos }
   });
   if (histIdx >= 0 && history[histIdx] === snap) return;
   history = history.slice(0, histIdx + 1);
@@ -51,6 +68,8 @@ function restoreSnap(snapStr) {
   $('#vmode').checked = s.vmode;
   document.body.classList.toggle('vm', s.vmode);
   $('#vopts').hidden = !s.vmode;
+  if (s.cropBox) cropBox = { ...s.cropBox };
+  if (s.legPos) legPos = { ...s.legPos };
   renderLegs();
   render();
   $('#undo').disabled = histIdx <= 0;
@@ -70,7 +89,7 @@ $$('.tab-btn').forEach(btn => {
 
 $('#theme-btn').onclick = () => {
   const cur = document.documentElement.getAttribute('data-theme');
-  document.documentElement.setAttribute('data-theme', cur === 'light' ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
 };
 
 // --- FUNCIONES DE CARGA SVG ---
@@ -134,11 +153,25 @@ function load(text) {
   el.removeAttribute('width');
   el.removeAttribute('height');
   el.removeAttribute('style');
+
+  const v2 = el.viewBox.baseVal;
+  origVB = { x: v2.x, y: v2.y, w: v2.width || 800, h: v2.height || 600 };
+
+  // Inicializar leyenda a un costado del mapa y el borde de exportación abarcando mapa + leyenda
+  const fs = baseFontSize();
+  legPos = { x: origVB.x + origVB.w + fs * 1.2, y: origVB.y + fs * 2 };
+  cropBox = {
+    x: origVB.x - fs,
+    y: origVB.y - fs,
+    w: origVB.w + fs * 13,
+    h: origVB.h + fs * 2
+  };
+
   updateStrokeVars();
   stage.classList.toggle('auto', $('#auto').checked);
 
-  layout();
   analyze();
+  updateCanvasViewBox();
   ['png', 'svgx', 'copy', 'dl-csv', 'level'].forEach(i => $('#' + i).disabled = false);
   $('#lvlrow').hidden = false;
   history = [];
@@ -146,10 +179,25 @@ function load(text) {
   pushHistory();
 }
 
+function baseFontSize() {
+  return Math.max(origVB.w, origVB.h * 0.25) / 22;
+}
+
+// Ajusta el viewBox visible del lienzo para que siempre quepan tanto el mapa original como el marco de exportación
+function updateCanvasViewBox() {
+  if (!svg) return;
+  const pad = Math.max(origVB.w, origVB.h) * 0.04;
+  const minX = Math.min(origVB.x, cropBox.x, legPos.x) - pad;
+  const minY = Math.min(origVB.y, cropBox.y, legPos.y) - pad;
+  const maxX = Math.max(origVB.x + origVB.w, cropBox.x + cropBox.w, legPos.x + baseFontSize() * 10) + pad;
+  const maxY = Math.max(origVB.y + origVB.h, cropBox.y + cropBox.h, legPos.y + baseFontSize() * 6) + pad;
+  svg.setAttribute('viewBox', `${minX} ${minY} ${maxX - minX} ${maxY - minY}`);
+  layout();
+}
+
 function updateStrokeVars() {
   if (!svg) return;
-  const v2 = svg.viewBox.baseVal;
-  const base = Math.max(v2.width || 1000, v2.height || 1000) / 2800;
+  const base = Math.max(origVB.w || 1000, origVB.h || 1000) / 2800;
   const mult = parseFloat($('#stroke-mult').value) || 0.5;
   $('#sw-lbl').textContent = mult.toFixed(2).replace(/\.?0+$/, '') + 'x';
   svg.style.setProperty('--sw', base * mult);
@@ -160,7 +208,7 @@ function updateStrokeVars() {
 function analyze() {
   SH = [];
   maxDepth = 0;
-  const skip = 'defs,clipPath,mask,pattern,symbol,marker';
+  const skip = 'defs,clipPath,mask,pattern,symbol,marker,#g-map-labels,#g-inmap-legend,#g-crop-overlay,#g-map-title';
   for (const s of svg.querySelectorAll(SHAPES)) {
     if (s.closest(skip)) continue;
     const cs = getComputedStyle(s);
@@ -181,7 +229,7 @@ function analyze() {
   for (let i = 0; i <= maxDepth; i++) L.add(new Option(`Nivel ${i + 1} · ${count(i)} unidades`, i));
   L.add(new Option(`Cada forma · ${SH.length}`, 'shape'));
 
-  // Seleccionar Nivel 3 (índice 2) por defecto si el SVG tiene esa profundidad:
+  // Nivel 3 (índice 2) por defecto si existe esa jerarquía
   const defaultLevel = maxDepth >= 2 ? '2' : 'auto';
   L.value = defaultLevel;
   group(defaultLevel);
@@ -316,7 +364,9 @@ function render() {
   $('#count').textContent = assign.size;
   updateStats();
   renderMapLabels();
-  prevLegend();
+  renderMapTitle();
+  renderInMapLegend();
+  renderCropOverlay();
 }
 
 function updateStats() {
@@ -344,8 +394,7 @@ function renderMapLabels() {
   if (mode === 'none') return;
 
   const selOnly = $('#lbl-sel-only').checked;
-  const vb = svg.viewBox.baseVal;
-  const fs = Math.max(vb.width || 800, vb.height || 600) / 65;
+  const fs = Math.max(origVB.w || 800, origVB.h || 600) / 65;
 
   const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
   g.setAttribute('id', 'g-map-labels');
@@ -377,6 +426,166 @@ function renderMapLabels() {
   svg.appendChild(g);
 }
 
+function renderMapTitle() {
+  if (!svg) return;
+  const old = svg.querySelector('#g-map-title');
+  if (old) old.remove();
+
+  const titleTxt = $('#map-title').value.trim();
+  if (!titleTxt) return;
+
+  const fs = baseFontSize();
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  g.setAttribute('id', 'g-map-title');
+
+  const t1 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t1.setAttribute('x', cropBox.x + cropBox.w / 2);
+  t1.setAttribute('y', cropBox.y + fs * 1.5);
+  t1.setAttribute('text-anchor', 'middle');
+  t1.setAttribute('font-size', fs * 1.25);
+  t1.setAttribute('font-weight', '700');
+  t1.setAttribute('font-family', 'system-ui,Arial,sans-serif');
+  t1.setAttribute('fill', '#111');
+  t1.textContent = titleTxt;
+  g.appendChild(t1);
+  svg.appendChild(g);
+}
+
+// --- LEYENDA INTERACTIVA DENTRO DEL MAPA ---
+function legendSVG(fs, ink, showAllFallback = false) {
+  let L = legends.filter(l => [...assign.values()].some(a => a.lid === l.id));
+  if (!L.length && showAllFallback) L = legends;
+  if (!L.length) return null;
+
+  const vm = $('#vmode').checked;
+  const st = $('#vsteps').value;
+  const K = st === 'c' ? 20 : +st;
+  const mn = +$('#vmin').value || 0, mx = +$('#vmax').value || 0, bw = fs * 8, sw = fs / 20;
+  const esc = t => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const T = (x, y, t, sz, an) => `<text x="${x}" y="${y}" font-size="${sz}" text-anchor="${an || 'start'}" fill="${ink}" font-family="system-ui,Arial,sans-serif">${esc(t)}</text>`;
+  let y = 0, w = bw, s = '';
+  L.forEach(l => {
+    s += `<rect x="0" y="${y}" width="${fs}" height="${fs}" fill="${l.color}" stroke="${ink}" stroke-width="${sw}"/>` + T(fs * 1.4, y + fs * 0.82, l.name, fs);
+    w = Math.max(w, fs * 1.4 + l.name.length * fs * 0.55);
+    y += fs * 1.5;
+    if (vm) {
+      for (let i = 0; i < K; i++) {
+        const t = st !== 'c' ? (i + 1) / K : (i + 0.5) / K;
+        s += `<rect x="${i * bw / K}" y="${y}" width="${bw / K + 0.3}" height="${fs * 0.7}" fill="${mixW(l.color, 0.2 + 0.8 * t)}"/>`;
+      }
+      s += `<rect x="0" y="${y}" width="${bw}" height="${fs * 0.7}" fill="none" stroke="${ink}" stroke-width="${sw}"/>`;
+      s += T(0, y + fs * 1.5, mn + '%', fs * 0.7) + T(bw, y + fs * 1.5, mx + '%+', fs * 0.7, 'end');
+      y += fs * 2.1;
+    }
+    y += fs * 0.4;
+  });
+  return { s, w, h: y };
+}
+
+function renderInMapLegend() {
+  if (!svg) return;
+  const old = svg.querySelector('#g-inmap-legend');
+  if (old) old.remove();
+
+  if (!$('#show-leg').checked) return;
+  const scale = parseFloat($('#leg-scale').value) || 1;
+  $('#leg-sz-lbl').textContent = scale.toFixed(1).replace(/\.0$/, '') + 'x';
+
+  const fs = baseFontSize() * scale;
+  const G = legendSVG(fs, '#000', true);
+  if (!G) return;
+
+  const pad = fs * 0.6;
+  const hasBg = $('#leg-bg').checked;
+  const bgMarkup = hasBg
+    ? `<rect class="leg-hover-outline" x="${-pad}" y="${-pad}" width="${G.w + pad * 2}" height="${G.h + pad * 2}" rx="${fs * 0.2}" fill="rgba(255,255,255,0.9)" stroke="#444" stroke-width="${fs / 18}"/>`
+    : `<rect class="leg-hover-outline" x="${-pad}" y="${-pad}" width="${G.w + pad * 2}" height="${G.h + pad * 2}" fill="transparent" stroke="transparent" stroke-width="${fs / 14}"/>`;
+
+  const doc = new DOMParser().parseFromString(
+    `<svg xmlns="http://www.w3.org/2000/svg"><g id="g-inmap-legend" transform="translate(${legPos.x},${legPos.y})">${bgMarkup}${G.s}</g></svg>`,
+    'image/svg+xml'
+  );
+  const node = document.importNode(doc.documentElement.firstChild, true);
+  svg.appendChild(node);
+}
+
+// --- MARCO DISCONTINUO DE EXPORTACIÓN (CROP BOX INTERACTIVO) ---
+function renderCropOverlay() {
+  if (!svg) return;
+  const old = svg.querySelector('#g-crop-overlay');
+  if (old) old.remove();
+
+  if (!$('#show-crop').checked) return;
+
+  const { x, y, w, h } = cropBox;
+  const vb = svg.viewBox.baseVal;
+  const hs = Math.max(vb.width || 800, vb.height || 600) / (110 * Math.sqrt(z));
+
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  g.setAttribute('id', 'g-crop-overlay');
+
+  // Fondo blanco sutil + línea punteada negra para contraste en cualquier fondo
+  const rBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rBg.setAttribute('x', x);
+  rBg.setAttribute('y', y);
+  rBg.setAttribute('width', w);
+  rBg.setAttribute('height', h);
+  rBg.setAttribute('class', 'crop-rect-bg');
+
+  const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  r.setAttribute('x', x);
+  r.setAttribute('y', y);
+  r.setAttribute('width', w);
+  r.setAttribute('height', h);
+  r.setAttribute('class', 'crop-rect');
+
+  g.append(rBg, r);
+
+  // Bordes arrastrables
+  const edges = [
+    { d: 'n', x1: x, y1: y, x2: x + w, y2: y, cur: 'ns-resize' },
+    { d: 's', x1: x, y1: y + h, x2: x + w, y2: y + h, cur: 'ns-resize' },
+    { d: 'w', x1: x, y1: y, x2: x, y2: y + h, cur: 'ew-resize' },
+    { d: 'e', x1: x + w, y1: y, x2: x + w, y2: y + h, cur: 'ew-resize' }
+  ];
+  edges.forEach(ed => {
+    const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    ln.setAttribute('x1', ed.x1);
+    ln.setAttribute('y1', ed.y1);
+    ln.setAttribute('x2', ed.x2);
+    ln.setAttribute('y2', ed.y2);
+    ln.setAttribute('class', 'crop-edge');
+    ln.style.cursor = ed.cur;
+    ln.dataset.cropDir = ed.d;
+    g.appendChild(ln);
+  });
+
+  // 8 Tiradores (Esquinas y centros de cada lado)
+  const handles = [
+    { d: 'nw', cx: x, cy: y, cur: 'nwse-resize' },
+    { d: 'n', cx: x + w / 2, cy: y, cur: 'ns-resize' },
+    { d: 'ne', cx: x + w, cy: y, cur: 'nesw-resize' },
+    { d: 'e', cx: x + w, cy: y + h / 2, cur: 'ew-resize' },
+    { d: 'se', cx: x + w, cy: y + h, cur: 'nwse-resize' },
+    { d: 's', cx: x + w / 2, cy: y + h, cur: 'ns-resize' },
+    { d: 'sw', cx: x, cy: y + h, cur: 'nesw-resize' },
+    { d: 'w', cx: x, cy: y + h / 2, cur: 'ew-resize' }
+  ];
+  handles.forEach(hnd => {
+    const hr = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    hr.setAttribute('x', hnd.cx - hs / 2);
+    hr.setAttribute('y', hnd.cy - hs / 2);
+    hr.setAttribute('width', hs);
+    hr.setAttribute('height', hs);
+    hr.setAttribute('class', 'crop-handle');
+    hr.style.cursor = hnd.cur;
+    hr.dataset.cropDir = hnd.d;
+    g.appendChild(hr);
+  });
+
+  svg.appendChild(g);
+}
+
 function toggle(i) {
   const a = assign.get(i);
   a && a.lid === activeL ? assign.delete(i) : assign.set(i, { lid: activeL, v: a ? a.v : null });
@@ -387,16 +596,18 @@ function layout() {
   if (!svg) return;
   const vb = svg.viewBox.baseVal;
   const ar = (vb.width || 800) / (vb.height || 600);
-  const w = Math.min(stage.clientWidth - 32, (stage.clientHeight - 32) * ar);
+  const w = Math.min(stage.clientWidth - 48, (stage.clientHeight - 48) * ar);
   svg.style.width = Math.max(w, 50) * z + 'px';
   svg.style.height = Math.max(w, 50) * z / ar + 'px';
 }
 
-// --- EVENTOS DEL LIENZO ---
+// --- EVENTOS DEL LIENZO (ARRASTRAR BORDES, LEYENDA, PAN Y PINTAR) ---
 const isPan = e => toolMode === 'pan' || spaceDown || e.button === 1 || e.button === 2;
 
 stage.addEventListener('pointerdown', e => {
   if (!svg) return;
+
+  // 1. Modo Mover Lienzo (Pan)
   if (isPan(e)) {
     e.preventDefault();
     stage.setPointerCapture(e.pointerId);
@@ -416,6 +627,79 @@ stage.addEventListener('pointerdown', e => {
   }
 
   if (e.button !== 0) return;
+
+  // 2. Redimensionar el borde discontinuo de exportación (Crop Box)
+  const cropTarget = e.target.closest('[data-crop-dir]');
+  if (cropTarget) {
+    e.preventDefault();
+    e.stopPropagation();
+    const dir = cropTarget.dataset.cropDir;
+    stage.setPointerCapture(e.pointerId);
+    const startPt = clientToSVG(e.clientX, e.clientY);
+    const startBox = { ...cropBox };
+    const minSize = baseFontSize() * 2;
+
+    stage.onpointermove = m => {
+      const curPt = clientToSVG(m.clientX, m.clientY);
+      const dx = curPt.x - startPt.x;
+      const dy = curPt.y - startPt.y;
+      let { x, y, w, h } = startBox;
+
+      if (dir.includes('w')) {
+        const nw = Math.max(minSize, w - dx);
+        x += w - nw;
+        w = nw;
+      }
+      if (dir.includes('e')) {
+        w = Math.max(minSize, w + dx);
+      }
+      if (dir.includes('n')) {
+        const nh = Math.max(minSize, h - dy);
+        y += h - nh;
+        h = nh;
+      }
+      if (dir.includes('s')) {
+        h = Math.max(minSize, h + dy);
+      }
+      cropBox = { x, y, w, h };
+      renderMapTitle();
+      renderCropOverlay();
+    };
+    stage.onpointerup = stage.onpointercancel = () => {
+      stage.onpointermove = stage.onpointerup = stage.onpointercancel = null;
+      updateCanvasViewBox();
+      pushHistory();
+    };
+    return;
+  }
+
+  // 3. Arrastrar la Leyenda dentro del mapa
+  const legTarget = e.target.closest('#g-inmap-legend');
+  if (legTarget) {
+    e.preventDefault();
+    e.stopPropagation();
+    stage.setPointerCapture(e.pointerId);
+    const startPt = clientToSVG(e.clientX, e.clientY);
+    const startLeg = { ...legPos };
+
+    stage.onpointermove = m => {
+      const curPt = clientToSVG(m.clientX, m.clientY);
+      legPos = {
+        x: startLeg.x + (curPt.x - startPt.x),
+        y: startLeg.y + (curPt.y - startPt.y)
+      };
+      const g = svg.querySelector('#g-inmap-legend');
+      if (g) g.setAttribute('transform', `translate(${legPos.x},${legPos.y})`);
+    };
+    stage.onpointerup = stage.onpointercancel = () => {
+      stage.onpointermove = stage.onpointerup = stage.onpointercancel = null;
+      updateCanvasViewBox();
+      pushHistory();
+    };
+    return;
+  }
+
+  // 4. Pintar regiones
   const s = e.target.closest('[data-u]');
   if (!s) return;
   const uIdx = +s.dataset.u;
@@ -604,41 +888,6 @@ $('#pal-sel').onchange = e => {
   pushHistory();
 };
 
-function legendSVG(fs, ink) {
-  const L = legends.filter(l => [...assign.values()].some(a => a.lid === l.id));
-  if (!L.length) return null;
-  const vm = $('#vmode').checked;
-  const st = $('#vsteps').value;
-  const K = st === 'c' ? 20 : +st;
-  const mn = +$('#vmin').value || 0, mx = +$('#vmax').value || 0, bw = fs * 8, sw = fs / 20;
-  const esc = t => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const T = (x, y, t, sz, an) => `<text x="${x}" y="${y}" font-size="${sz}" text-anchor="${an || 'start'}" fill="${ink}" font-family="system-ui,Arial,sans-serif">${esc(t)}</text>`;
-  let y = 0, w = bw, s = '';
-  L.forEach(l => {
-    s += `<rect x="0" y="${y}" width="${fs}" height="${fs}" fill="${l.color}" stroke="${ink}" stroke-width="${sw}"/>` + T(fs * 1.4, y + fs * 0.82, l.name, fs);
-    w = Math.max(w, fs * 1.4 + l.name.length * fs * 0.55);
-    y += fs * 1.5;
-    if (vm) {
-      for (let i = 0; i < K; i++) {
-        const t = st !== 'c' ? (i + 1) / K : (i + 0.5) / K;
-        s += `<rect x="${i * bw / K}" y="${y}" width="${bw / K + 0.3}" height="${fs * 0.7}" fill="${mixW(l.color, 0.2 + 0.8 * t)}"/>`;
-      }
-      s += `<rect x="0" y="${y}" width="${bw}" height="${fs * 0.7}" fill="none" stroke="${ink}" stroke-width="${sw}"/>`;
-      s += T(0, y + fs * 1.5, mn + '%', fs * 0.7) + T(bw, y + fs * 1.5, mx + '%+', fs * 0.7, 'end');
-      y += fs * 2.1;
-    }
-    y += fs * 0.4;
-  });
-  return { s, w, h: y };
-}
-
-function prevLegend() {
-  const g = legendSVG(13, 'currentColor');
-  $('#lprev').innerHTML = g
-    ? `<svg viewBox="0 0 ${g.w + 4} ${g.h}" width="${g.w + 4}" style="color:var(--ink);max-width:100%">${g.s}</svg>`
-    : '<span class="sub">Selecciona regiones en el mapa</span>';
-}
-
 function setVM(on) {
   $('#vmode').checked = on;
   document.body.classList.toggle('vm', on);
@@ -657,7 +906,47 @@ $('#autorange').onclick = () => {
   render();
 };
 
-$('#addleg').onclick = () => { activeL = addLeg().id; renderLegs(); pushHistory(); };
+$('#addleg').onclick = () => { activeL = addLeg().id; renderLegs(); render(); pushHistory(); };
+
+// Controles de Leyenda en el mapa y Borde de Exportación
+['show-leg', 'leg-bg', 'leg-scale', 'show-crop'].forEach(id => {
+  $('#' + id).oninput = render;
+});
+
+$('#reset-crop').onclick = () => {
+  if (!svg) return;
+  const fs = baseFontSize();
+  const legG = svg.querySelector('#g-inmap-legend');
+  let maxX = origVB.x + origVB.w, maxY = origVB.y + origVB.h;
+  let minX = origVB.x, minY = origVB.y;
+  if (legG && $('#show-leg').checked) {
+    try {
+      const lb = legG.getBBox();
+      minX = Math.min(minX, legPos.x + lb.x);
+      minY = Math.min(minY, legPos.y + lb.y);
+      maxX = Math.max(maxX, legPos.x + lb.x + lb.width);
+      maxY = Math.max(maxY, legPos.y + lb.y + lb.height);
+    } catch {}
+  }
+  cropBox = {
+    x: minX - fs,
+    y: minY - fs,
+    w: (maxX - minX) + fs * 2,
+    h: (maxY - minY) + fs * 2
+  };
+  updateCanvasViewBox();
+  render();
+  pushHistory();
+};
+
+$('#reset-leg').onclick = () => {
+  if (!svg) return;
+  const fs = baseFontSize();
+  legPos = { x: origVB.x + origVB.w + fs * 1.2, y: origVB.y + fs * 2 };
+  updateCanvasViewBox();
+  render();
+  pushHistory();
+};
 
 // --- IMPORTAR CSV ---
 const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -716,6 +1005,7 @@ $('#auto').onchange = e => stage.classList.toggle('auto', e.target.checked);
 ['empty-col', 'stroke-col', 'stroke-mult'].forEach(id => $('#' + id).oninput = updateStrokeVars);
 $('#bg-trans').onchange = e => { $('#bg-col-row').hidden = e.target.checked; };
 ['lbl-mode', 'lbl-sel-only'].forEach(id => $('#' + id).onchange = renderMapLabels);
+$('#map-title').oninput = renderMapTitle;
 
 $('#all').onclick = () => {
   units.forEach((_, i) => assign.set(i, { lid: activeL, v: assign.get(i) ? assign.get(i).v : null }));
@@ -746,6 +1036,7 @@ function zoomAt(k, cx, cy) {
   z = nz;
   $('#zoom-lbl').textContent = Math.round(z * 100) + '%';
   layout();
+  renderCropOverlay();
   const r2 = svg.getBoundingClientRect();
   stage.scrollLeft += r2.left + fx * r2.width - cx;
   stage.scrollTop += r2.top + fy * r2.height - cy;
@@ -761,6 +1052,7 @@ $('#zfit').onclick = () => {
   z = 1;
   $('#zoom-lbl').textContent = '100%';
   layout();
+  renderCropOverlay();
 };
 
 stage.addEventListener('wheel', e => {
@@ -772,12 +1064,22 @@ stage.addEventListener('wheel', e => {
 stage.addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('resize', layout);
 
-// --- EXPORTAR ---
+// --- EXPORTAR USANDO EXACTAMENTE EL MARCO DE RECORTE Y LA LEYENDA EN EL MAPA ---
 function exportClone() {
   const c = svg.cloneNode(true), auto = $('#auto').checked;
   const sw = svg.style.getPropertyValue('--sw') || 0.5;
   const emptyCol = $('#empty-col').value;
   const strokeCol = $('#stroke-col').value;
+
+  // Remover la superposición de líneas punteadas y tiradores del archivo final
+  const cropOv = c.querySelector('#g-crop-overlay');
+  if (cropOv) cropOv.remove();
+
+  // Si no hay fondo blanco activado en la leyenda, quitar el rectángulo auxiliar de hover
+  if (!$('#leg-bg').checked) {
+    const legOutline = c.querySelector('.leg-hover-outline');
+    if (legOutline) legOutline.remove();
+  }
 
   c.querySelectorAll('.f').forEach(e => {
     const col = colors.get(+e.dataset.u), st = e.style;
@@ -798,50 +1100,13 @@ function exportClone() {
   }
   c.querySelectorAll('[style]').forEach(e => e.style.removeProperty('--c'));
   c.querySelectorAll('[class]').forEach(e => {
-    e.classList.remove('f', 'nf', 'sk', 'c', 'hov');
+    e.classList.remove('f', 'nf', 'sk', 'c', 'hov', 'leg-hover-outline');
     if (!e.getAttribute('class')) e.removeAttribute('class');
   });
   c.querySelectorAll('[data-u]').forEach(e => e.removeAttribute('data-u'));
   if (!c.getAttribute('xmlns')) c.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
 
-  const vb = svg.viewBox.baseVal;
-  let vx = vb.x, vy = vb.y, vw = vb.width, vh = vb.height;
-  const fs = Math.max(vw, vh * 0.25) / 22;
-
-  const titleTxt = $('#map-title').value.trim();
-  if (titleTxt) {
-    const padTop = fs * 2.2;
-    const t1 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    t1.setAttribute('x', vx + vw / 2);
-    t1.setAttribute('y', vy - padTop + fs * 1.1);
-    t1.setAttribute('text-anchor', 'middle');
-    t1.setAttribute('font-size', fs * 1.2);
-    t1.setAttribute('font-weight', '700');
-    t1.setAttribute('font-family', 'system-ui,Arial,sans-serif');
-    t1.setAttribute('fill', '#000');
-    t1.textContent = titleTxt;
-    c.appendChild(t1);
-    vy -= padTop;
-    vh += padTop;
-  }
-
-  const legPos = $('#legpos').value;
-  const G = legPos !== 'none' && legendSVG(fs, '#000');
-  if (G) {
-    const doc = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${G.s}</svg>`, 'image/svg+xml');
-    const gg = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    if (legPos === 'right') {
-      gg.setAttribute('transform', `translate(${vx + vw + fs},${vy + fs})`);
-      vw = vw + fs * 2 + G.w;
-      vh = Math.max(vh, G.h + fs * 2);
-    } else if (legPos === 'bottom') {
-      gg.setAttribute('transform', `translate(${vx + Math.max(0, (vw - G.w) / 2)},${vy + vh + fs})`);
-      vw = Math.max(vw, G.w + fs * 2);
-      vh = vh + G.h + fs * 2;
-    }
-    [...doc.documentElement.childNodes].forEach(n => gg.appendChild(document.importNode(n, true)));
-    c.appendChild(gg);
-  }
+  const { x: vx, y: vy, w: vw, h: vh } = cropBox;
 
   if (!$('#bg-trans').checked) {
     const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
