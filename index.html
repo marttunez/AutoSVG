@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Selector de regiones SVG</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+
+  <header>
+    <h1>Selector SVG</h1>
+    <input type="file" id="file" accept=".svg,image/svg+xml" hidden>
+    <button class="pri" id="up">Abrir SVG…</button>
+
+    <div class="sep"></div>
+
+    <button id="undo" disabled title="Deshacer (Ctrl+Z)">Deshacer</button>
+    <button id="redo" disabled title="Rehacer (Ctrl+Y)">Rehacer</button>
+
+    <div class="sep"></div>
+
+    <button id="tool-paint" class="active" title="Clic o arrastrar para pintar">Pintar</button>
+    <button id="tool-pan" title="Mover mapa (o mantén Barra Espaciadora / Clic derecho)">Mover</button>
+
+    <div class="sep"></div>
+
+    <button id="zo" aria-label="Alejar">−</button>
+    <span id="zoom-lbl" class="sub zoom-readout">100%</span>
+    <button id="zi" aria-label="Acercar">+</button>
+    <button id="zfit" title="Restablecer zoom">100%</button>
+
+    <div class="spacer"></div>
+
+    <span class="sub">Ancho PNG</span>
+    <input type="number" id="pxw" value="2000" min="100" max="8000" step="100">
+    <span class="sub">px</span>
+    <button id="svgx" disabled>Exportar SVG</button>
+    <button class="pri" id="png" disabled>Exportar PNG</button>
+
+    <div class="sep"></div>
+    <button id="theme-btn" title="Cambiar tema claro/oscuro">Tema</button>
+  </header>
+
+  <div class="app">
+    <!-- PANEL IZQUIERDO -->
+    <aside class="side side-l" aria-label="Opciones">
+      <div class="tabs">
+        <button class="tab-btn active" data-pane="p-legs">Leyendas</button>
+        <button class="tab-btn" data-pane="p-style">Apariencia</button>
+        <button class="tab-btn" data-pane="p-data">Datos CSV</button>
+      </div>
+
+      <!-- PANE 1: LEYENDAS -->
+      <div class="pane" id="p-legs">
+        <div class="sec">
+          <div class="sec-title">
+            <span>Categorías</span>
+            <button id="addleg">+ Leyenda</button>
+          </div>
+          <div class="sub">Elige la activa (●) y haz clic o arrastra sobre el mapa. Alt + clic borra.</div>
+          <div id="legs"></div>
+          <div class="row-between" style="margin-top:4px">
+            <span class="sub">Paleta:</span>
+            <select id="pal-sel" style="width:150px">
+              <option value="">Aplicar colores…</option>
+              <option value="default">Clásica</option>
+              <option value="okabe">Okabe-Ito</option>
+              <option value="viridis">Viridis</option>
+              <option value="diverging">Azul - Rojo</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="sec">
+          <label class="row-between" style="cursor:pointer">
+            <span class="sec-title">Gradiente por valor (%)</span>
+            <input type="checkbox" id="vmode">
+          </label>
+          <div id="vopts" hidden class="vopts-box">
+            <div class="row">
+              <span class="sub">mín</span>
+              <input type="number" id="vmin" value="0" style="width:58px">
+              <span class="sub">máx</span>
+              <input type="number" id="vmax" value="30" style="width:58px">
+              <button id="autorange" class="grow" title="Calcular mín/máx según valores">Auto</button>
+            </div>
+            <div class="row-between">
+              <span class="sub">Tramos:</span>
+              <select id="vsteps" style="width:130px">
+                <option value="c">Continuo</option>
+                <option value="3">3 tramos</option>
+                <option value="5">5 tramos</option>
+                <option value="7">7 tramos</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title"><span>Vista previa de leyenda</span></div>
+          <div id="lprev"></div>
+          <div class="row-between">
+            <span class="sub">Al exportar:</span>
+            <select id="legpos" style="width:140px">
+              <option value="right">A la derecha</option>
+              <option value="bottom">Abajo</option>
+              <option value="none">No incluir</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- PANE 2: APARIENCIA -->
+      <div class="pane" id="p-style" hidden>
+        <div class="sec">
+          <label class="row-between" style="cursor:pointer">
+            <span class="sec-title">Estilo uniforme de bordes y fondo</span>
+            <input type="checkbox" id="auto" checked>
+          </label>
+          <div class="row-between">
+            <span class="sub">Relleno sin seleccionar:</span>
+            <input type="color" id="empty-col" value="#d9d9d9">
+          </div>
+          <div class="row-between">
+            <span class="sub">Color de líneas/bordes:</span>
+            <input type="color" id="stroke-col" value="#333333">
+          </div>
+          <div class="row-between">
+            <span class="sub">Grosor de línea (<span id="sw-lbl">0.5x</span>):</span>
+            <input type="range" id="stroke-mult" min="0.05" max="3" step="0.05" value="0.5" style="width:120px">
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title"><span>Texto y Etiquetas</span></div>
+          <div class="row-between">
+            <span class="sub">Etiquetas en mapa:</span>
+            <select id="lbl-mode" style="width:140px">
+              <option value="none">Ninguna</option>
+              <option value="val">Solo valor (%)</option>
+              <option value="name">Nombre</option>
+              <option value="both">Nombre + Valor</option>
+            </select>
+          </div>
+          <label class="row-between sub" style="cursor:pointer">
+            <span>Solo etiquetar seleccionadas</span>
+            <input type="checkbox" id="lbl-sel-only" checked>
+          </label>
+          <div class="row-between">
+            <span class="sub">Título superior:</span>
+            <input type="text" id="map-title" placeholder="Opcional" style="width:140px">
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title"><span>Fondo al exportar</span></div>
+          <label class="row-between sub" style="cursor:pointer">
+            <span>Fondo transparente</span>
+            <input type="checkbox" id="bg-trans" checked>
+          </label>
+          <div class="row-between" id="bg-col-row" hidden>
+            <span class="sub">Color de fondo:</span>
+            <input type="color" id="bg-col" value="#ffffff">
+          </div>
+        </div>
+      </div>
+
+      <!-- PANE 3: DATOS CSV -->
+      <div class="pane" id="p-data" hidden>
+        <div class="sec">
+          <div class="sec-title"><span>Importar datos (CSV)</span></div>
+          <div class="sub">Formato: <code>Región; Leyenda; Valor</code> o <code>Región; Valor</code></div>
+          <textarea id="data" rows="8" placeholder="Región; Leyenda; Valor&#10;Región 1; Opción A; 12,5&#10;Región 2; Opción B; 4"></textarea>
+          <button class="pri" id="imp">Aplicar datos</button>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title"><span>Exportar selección</span></div>
+          <div class="row">
+            <button id="copy" class="grow" disabled>Copiar nombres</button>
+            <button id="dl-csv" class="grow" disabled>Descargar CSV</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="rz" id="rzl" role="separator" aria-orientation="vertical" tabindex="0"></div>
+
+    <!-- LIENZO CENTRAL -->
+    <main id="stage" title="Rueda: acercar/alejar · Clic derecho o Espacio + arrastrar: mover">
+      <div class="empty" id="empty-drop">
+        <b>Sube o arrastra un archivo .svg</b>
+        El programa detecta las regiones (grupos y formas con nombre) para seleccionarlas, colorearlas y exportarlas.
+      </div>
+    </main>
+
+    <div class="rz" id="rzr" role="separator" aria-orientation="vertical" tabindex="0"></div>
+
+    <!-- PANEL DERECHO -->
+    <aside class="side side-r" aria-label="Regiones">
+      <div class="r-head">
+        <div class="row-between">
+          <b>Regiones</b>
+          <span class="sub"><b id="count">0</b> de <span id="total">0</span></span>
+        </div>
+        <div class="row" id="lvlrow" hidden>
+          <select id="level" class="grow" aria-label="Nivel de detección" disabled></select>
+        </div>
+        <div class="row">
+          <input id="q" class="grow" type="search" placeholder="Buscar…" aria-label="Buscar región">
+          <select id="sort-list" style="width:90px" title="Ordenar">
+            <option value="idx">Orden</option>
+            <option value="az">A - Z</option>
+            <option value="val">Valor</option>
+            <option value="sel">Activas</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="all" class="grow">Todas</button>
+          <button id="invert" class="grow">Invertir</button>
+          <button id="none" class="grow">Limpiar</button>
+        </div>
+        <label class="sub unnamed-chk">
+          <input type="checkbox" id="unnamed"> Mostrar sin nombre (<span id="nun">0</span>)
+        </label>
+      </div>
+      <ul id="list" title="Doble clic en un elemento para renombrarlo"></ul>
+    </aside>
+  </div>
+
+  <footer>
+    <span id="stats-bar" hidden>
+      Media: <b id="st-avg">—</b> · Mín: <b id="st-min">—</b> · Máx: <b id="st-max">—</b> · Suma: <b id="st-sum">—</b>
+    </span>
+    <div class="spacer"></div>
+    <span>Rueda: zoom (15%–4000%) · Clic/arrastrar: pintar · Alt+Clic: borrar · Clic der./Espacio: mover</span>
+  </footer>
+
+  <div id="tip"></div>
+  <div id="toast"></div>
+
+</body>
+</html>
